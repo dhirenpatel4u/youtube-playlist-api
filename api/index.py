@@ -9,67 +9,111 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
 
         try:
-            # Read ?id= from URL
+            # Get ?id=PLAYLIST_ID
             query = parse_qs(
                 urlparse(self.path).query
             )
 
-            video_id = query.get("id", [None])[0]
+            playlist_id = query.get("id", [None])[0]
 
-            if not video_id:
+            if not playlist_id:
                 self.send_json(
                     400,
                     {
-                        "error": "Missing id",
-                        "usage": "/?id=YOUTUBE_VIDEO_ID"
+                        "error": "Missing playlist ID"
                     }
                 )
                 return
 
-            video_url = (
-                "https://www.youtube.com/watch?v="
-                + video_id
+            playlist_url = (
+                "https://www.youtube.com/playlist?list="
+                + playlist_id
             )
 
-            options = {
+            ydl_options = {
                 "quiet": True,
                 "no_warnings": True,
-                "skip_download": True
+
+                # Don't download videos
+                "skip_download": True,
+
+                # Get playlist entries
+                "extract_flat": True,
+
+                "ignoreerrors": True
             }
 
-            with yt_dlp.YoutubeDL(options) as ydl:
+            with yt_dlp.YoutubeDL(ydl_options) as ydl:
+
                 info = ydl.extract_info(
-                    video_url,
+                    playlist_url,
                     download=False
                 )
 
-            result = {
-                "id": video_id,
-                "title": info.get("title"),
-                "artist": (
-                    info.get("channel")
-                    or info.get("uploader")
-                ),
-                "duration": info.get("duration"),
-                "cover": (
-                    "https://i.ytimg.com/vi/"
-                    + video_id
-                    + "/hqdefault.jpg"
-                ),
-                "youtubeUrl": video_url
-            }
+            result = []
+
+            entries = info.get("entries") or []
+
+            for entry in entries:
+
+                if not entry:
+                    continue
+
+                video_id = entry.get("id")
+
+                if not video_id:
+                    continue
+
+                title = (
+                    entry.get("title")
+                    or ""
+                )
+
+                artist = (
+                    entry.get("channel")
+                    or entry.get("uploader")
+                    or ""
+                )
+
+                duration = entry.get("duration")
+
+                # Ensure duration is a number
+                if duration is not None:
+                    duration = float(duration)
+
+                item = {
+                    "id": video_id,
+
+                    "title": title,
+
+                    "artist": artist,
+
+                    "album": None,
+
+                    "duration": duration,
+
+                    "cover": (
+                        "https://i.ytimg.com/vi/"
+                        + video_id
+                        + "/hqdefault.jpg"
+                    ),
+
+                    "rawTitle": title
+                }
+
+                result.append(item)
 
             self.send_json(
                 200,
                 result
             )
 
-        except Exception as e:
+        except Exception as error:
 
             self.send_json(
                 500,
                 {
-                    "error": str(e)
+                    "error": str(error)
                 }
             )
 
