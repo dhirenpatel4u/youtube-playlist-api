@@ -1,124 +1,193 @@
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
 import json
 import yt_dlp
 
 
 class handler(BaseHTTPRequestHandler):
 
-    def do_GET(self):
+    def do_POST(self):
 
         try:
-            # Get ?id=PLAYLIST_ID
-            query = parse_qs(
-                urlparse(self.path).query
+            # Read POST body
+            content_length = int(
+                self.headers.get("Content-Length", 0)
             )
 
-            playlist_id = query.get("id", [None])[0]
+            body = self.rfile.read(
+                content_length
+            )
 
-            if not playlist_id:
+            data = json.loads(
+                body.decode("utf-8")
+            )
+
+            video_id = data.get("id")
+
+            if not video_id:
                 self.send_json(
                     400,
                     {
-                        "error": "Missing playlist ID"
+                        "error": "Missing YouTube track id"
                     }
                 )
                 return
 
-            playlist_url = (
-                "https://www.youtube.com/playlist?list="
-                + playlist_id
+            # YouTube video URL
+            video_url = (
+                "https://www.youtube.com/watch?v="
+                + video_id
             )
 
-            ydl_options = {
+            options = {
                 "quiet": True,
                 "no_warnings": True,
 
-                # Don't download videos
+                # Don't download
                 "skip_download": True,
 
-                # Get playlist entries
-                "extract_flat": True,
+                # Best audio-only format
+                "format": "bestaudio",
 
-                "ignoreerrors": True
+                "ignoreerrors": False
             }
 
-            with yt_dlp.YoutubeDL(ydl_options) as ydl:
+            with yt_dlp.YoutubeDL(options) as ydl:
 
                 info = ydl.extract_info(
-                    playlist_url,
+                    video_url,
                     download=False
                 )
 
-            result = []
+            if not info:
+                self.send_json(
+                    404,
+                    {
+                        "error": "Track not found"
+                    }
+                )
+                return
 
-            entries = info.get("entries") or []
+            # Make absolutely sure we return
+            # an audio-only format.
+            formats = info.get("formats", [])
 
-            for entry in entries:
+            audio_formats = []
 
-                if not entry:
+            for fmt in formats:
+
+                url = fmt.get("url")
+
+                acodec = fmt.get("acodec")
+
+                vcodec = fmt.get("vcodec")
+
+                if not url:
                     continue
 
-                video_id = entry.get("id")
-
-                if not video_id:
+                # Must contain audio
+                if not acodec:
                     continue
 
-                title = (
-                    entry.get("title")
-                    or ""
+                if acodec == "none":
+                    continue
+
+                # Must NOT contain video
+                if vcodec not in (
+                    None,
+                    "none"
+                ):
+                    continue
+
+                audio_formats.append(fmt)
+
+            if not audio_formats:
+                self.send_json(
+                    404,
+                    {
+                        "error": "No audio-only format found"
+                    }
                 )
+                return
 
-                artist = (
-                    entry.get("channel")
-                    or entry.get("uploader")
-                    or ""
+            # Highest audio quality.
+            #
+            # Prefer audio bitrate (abr),
+            # then total bitrate (tbr).
+            best = max(
+                audio_formats,
+                key=lambda f: (
+                    f.get("abr") or 0,
+                    f.get("tbr") or 0
                 )
+            )
 
-                duration = entry.get("duration")
+            result = {
+                "id": video_id,
 
-                # Ensure duration is a number
-                if duration is not None:
-                    duration = float(duration)
+                "title": info.get(
+                    "title"
+                ),
 
-                item = {
-                    "id": video_id,
+                "artist": (
+                    info.get("channel")
+                    or info.get("uploader")
+                ),
 
-                    "title": title,
+                "duration": info.get(
+                    "duration"
+                ),
 
-                    "artist": artist,
+                "acodec": best.get(
+                    "acodec"
+                ),
 
-                    "album": None,
+                "abr": best.get(
+                    "abr"
+                ),
 
-                    "duration": duration,
+                "ext": best.get(
+                    "ext"
+                ),
 
-                    "cover": (
-                        "https://i.ytimg.com/vi/"
-                        + video_id
-                        + "/hqdefault.jpg"
-                    ),
+                "format_id": best.get(
+                    "format_id"
+                ),
 
-                    "rawTitle": title
-                }
-
-                result.append(item)
+                "stream": best.get(
+                    "url"
+                )
+            }
 
             self.send_json(
                 200,
                 result
             )
 
-        except Exception as error:
+        except Exception as e:
 
             self.send_json(
                 500,
                 {
-                    "error": str(error)
+                    "error": str(e)
                 }
             )
 
 
-    def send_json(self, status, data):
+    def do_GET(self):
+
+        self.send_json(
+            405,
+            {
+                "error": "Use POST"
+            }
+        )
+
+
+    def send_json(
+        self,
+        status,
+        data
+    ):
 
         output = json.dumps(
             data,
@@ -138,6 +207,13 @@ class handler(BaseHTTPRequestHandler):
             "*"
         )
 
+        self.send_header(
+            "Cache-Control",
+            "no-store"
+        )
+
         self.end_headers()
 
-        self.wfile.write(output)
+        self.wfile.write(
+            output
+        )
