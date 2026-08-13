@@ -9,6 +9,7 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
 
         try:
+            # Get ?id=PLAYLIST_ID
             query = parse_qs(
                 urlparse(self.path).query
             )
@@ -19,8 +20,7 @@ class handler(BaseHTTPRequestHandler):
                 self.send_json(
                     400,
                     {
-                        "error": "Missing playlist ID",
-                        "usage": "/?id=PLAYLIST_ID"
+                        "error": "Missing playlist ID"
                     }
                 )
                 return
@@ -30,66 +30,90 @@ class handler(BaseHTTPRequestHandler):
                 + playlist_id
             )
 
-            options = {
+            ydl_options = {
                 "quiet": True,
                 "no_warnings": True,
-                "extract_flat": True,
+
+                # Don't download videos
                 "skip_download": True,
+
+                # Get playlist entries
+                "extract_flat": True,
+
                 "ignoreerrors": True
             }
 
-            with yt_dlp.YoutubeDL(options) as ydl:
+            with yt_dlp.YoutubeDL(ydl_options) as ydl:
 
                 info = ydl.extract_info(
                     playlist_url,
                     download=False
                 )
 
-            videos = []
+            result = []
 
-            for item in info.get("entries", []):
+            entries = info.get("entries") or []
 
-                if not item:
+            for entry in entries:
+
+                if not entry:
                     continue
 
-                video_id = item.get("id")
+                video_id = entry.get("id")
 
                 if not video_id:
                     continue
 
-                videos.append({
+                title = (
+                    entry.get("title")
+                    or ""
+                )
+
+                artist = (
+                    entry.get("channel")
+                    or entry.get("uploader")
+                    or ""
+                )
+
+                duration = entry.get("duration")
+
+                # Ensure duration is a number
+                if duration is not None:
+                    duration = float(duration)
+
+                item = {
                     "id": video_id,
-                    "title": item.get("title"),
-                    "url": (
-                        "https://www.youtube.com/watch?v="
-                        + video_id
-                    ),
-                    "thumbnail": (
+
+                    "title": title,
+
+                    "artist": artist,
+
+                    "album": None,
+
+                    "duration": duration,
+
+                    "cover": (
                         "https://i.ytimg.com/vi/"
                         + video_id
                         + "/hqdefault.jpg"
-                    )
-                })
+                    ),
 
-            result = {
-                "playlist": {
-                    "id": info.get("id"),
-                    "title": info.get("title"),
-                    "description": info.get("description"),
-                    "channel": info.get("channel"),
-                    "thumbnail": info.get("thumbnail")
-                },
-                "videos": videos
-            }
+                    "rawTitle": title
+                }
 
-            self.send_json(200, result)
+                result.append(item)
 
-        except Exception as e:
+            self.send_json(
+                200,
+                result
+            )
+
+        except Exception as error:
 
             self.send_json(
                 500,
                 {
-                    "error": str(e)
+                    "error": str(error)
                 }
             )
 
