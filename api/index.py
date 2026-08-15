@@ -1,117 +1,143 @@
-import json
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-
+import json
 import yt_dlp
 
 
 class handler(BaseHTTPRequestHandler):
 
-    def send_json(self, data, status=200):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-
-        self.wfile.write(body)
-
     def do_GET(self):
 
-        params = parse_qs(urlparse(self.path).query)
-        video_id = params.get("id", [None])[0]
-
-        if not video_id:
-            self.send_json({
-                "error": "Missing YouTube video ID",
-                "example": "/?id=ANcPW7zP3eI"
-            }, 400)
-            return
-
-        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
-
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "noplaylist": True,
-
-            # Audio only
-            "format": "bestaudio",
-
-            # Explicitly do NOT use cookies
-            "cookiefile": None,
-
-            # Anonymous client
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android_vr"]
-                }
-            }
-        }
-
         try:
+            # Get ?id=PLAYLIST_ID
+            query = parse_qs(
+                urlparse(self.path).query
+            )
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            playlist_id = query.get("id", [None])[0]
+
+            if not playlist_id:
+                self.send_json(
+                    400,
+                    {
+                        "error": "Missing playlist ID"
+                    }
+                )
+                return
+
+            playlist_url = (
+                "https://www.youtube.com/playlist?list="
+                + playlist_id
+            )
+
+            ydl_options = {
+                "quiet": True,
+                "no_warnings": True,
+
+                # Don't download videos
+                "skip_download": True,
+
+                # Get playlist entries
+                "extract_flat": True,
+
+                "ignoreerrors": True
+            }
+
+            with yt_dlp.YoutubeDL(ydl_options) as ydl:
+
                 info = ydl.extract_info(
-                    youtube_url,
+                    playlist_url,
                     download=False
                 )
 
-            # Find audio-only streams
-            audio_formats = []
+            result = []
 
-            for f in info.get("formats", []):
+            entries = info.get("entries") or []
 
-                if not f.get("url"):
+            for entry in entries:
+
+                if not entry:
                     continue
 
-                # No video
-                if f.get("vcodec") != "none":
+                video_id = entry.get("id")
+
+                if not video_id:
                     continue
 
-                # Must contain audio
-                if f.get("acodec") == "none":
-                    continue
-
-                audio_formats.append(f)
-
-            if not audio_formats:
-                self.send_json({
-                    "error": "No audio-only stream found",
-                    "id": video_id
-                }, 404)
-                return
-
-            # Sort from LOWEST bitrate to highest
-            audio_formats.sort(
-                key=lambda f: (
-                    f.get("abr") or 999999,
-                    f.get("tbr") or 999999
+                title = (
+                    entry.get("title")
+                    or ""
                 )
+
+                artist = (
+                    entry.get("channel")
+                    or entry.get("uploader")
+                    or ""
+                )
+
+                duration = entry.get("duration")
+
+                # Ensure duration is a number
+                if duration is not None:
+                    duration = float(duration)
+
+                item = {
+                    "id": video_id,
+
+                    "title": title,
+
+                    "artist": artist,
+
+                    "album": None,
+
+                    "duration": duration,
+
+                    "cover": (
+                        "https://i.ytimg.com/vi/"
+                        + video_id
+                        + "/hqdefault.jpg"
+                    ),
+
+                    "rawTitle": title
+                }
+
+                result.append(item)
+
+            self.send_json(
+                200,
+                result
             )
 
-            # Lowest bitrate audio stream
-            audio = audio_formats[0]
+        except Exception as error:
 
-            self.send_json({
-                "success": True,
-                "id": video_id,
-                "title": info.get("title"),
-                "audio_url": audio.get("url"),
-                "format_id": audio.get("format_id"),
-                "extension": audio.get("ext"),
-                "codec": audio.get("acodec"),
-                "bitrate": audio.get("abr"),
-                "sample_rate": audio.get("asr")
-            })
+            self.send_json(
+                500,
+                {
+                    "error": str(error)
+                }
+            )
 
-        except Exception as e:
 
-            self.send_json({
-                "success": False,
-                "id": video_id,
-                "error": str(e)
-            }, 500)
+    def send_json(self, status, data):
+
+        output = json.dumps(
+            data,
+            ensure_ascii=False,
+            indent=2
+        ).encode("utf-8")
+
+        self.send_response(status)
+
+        self.send_header(
+            "Content-Type",
+            "application/json; charset=utf-8"
+        )
+
+        self.send_header(
+            "Access-Control-Allow-Origin",
+            "*"
+        )
+
+        self.end_headers()
+
+        self.wfile.write(output)
