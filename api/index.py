@@ -1,7 +1,7 @@
+import json
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import yt_dlp
-import json
 
 
 class handler(BaseHTTPRequestHandler):
@@ -17,82 +17,90 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-        params = parse_qs(parsed.query)
 
+        params = parse_qs(urlparse(self.path).query)
         video_id = params.get("id", [None])[0]
 
         if not video_id:
             self.send_json({
-                "error": "Missing id parameter",
-                "example": "/?id=dQw4w9WgXcQ"
+                "error": "Missing YouTube ID"
             }, 400)
             return
 
-        # YouTube video URL from ID
         youtube_url = f"https://www.youtube.com/watch?v={video_id}"
 
-        ydl_opts = {
+        opts = {
             "quiet": True,
             "no_warnings": True,
-
-            # Audio only
-            "format": "bestaudio/best",
-
-            # Don't download the file
             "skip_download": True,
-
-            # Avoid playlist processing
             "noplaylist": True,
+
+            # ONLY AUDIO
+            "format": "bestaudio",
+
+            # No cookies
+            "cookiefile": None,
+
+            # Anonymous YouTube client
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android_vr"]
+                }
+            }
         }
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(youtube_url, download=False)
-
-                # Find highest quality audio-only format
-                audio_formats = [
-                    f for f in info.get("formats", [])
-                    if f.get("acodec") != "none"
-                    and f.get("vcodec") == "none"
-                    and f.get("url")
-                ]
-
-                if not audio_formats:
-                    self.send_json({
-                        "error": "No audio-only stream found"
-                    }, 404)
-                    return
-
-                # Highest bitrate audio
-                audio_formats.sort(
-                    key=lambda f: (
-                        f.get("abr") or 0,
-                        f.get("tbr") or 0
-                    ),
-                    reverse=True
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(
+                    youtube_url,
+                    download=False
                 )
 
-                audio = audio_formats[0]
+            # Keep ONLY audio formats
+            audio_formats = []
 
-                result = {
-                    "id": video_id,
-                    "title": info.get("title"),
-                    "duration": info.get("duration"),
-                    "thumbnail": info.get("thumbnail"),
+            for f in info.get("formats", []):
 
-                    "audio_url": audio.get("url"),
+                if not f.get("url"):
+                    continue
 
-                    "format_id": audio.get("format_id"),
-                    "extension": audio.get("ext"),
-                    "acodec": audio.get("acodec"),
-                    "abr": audio.get("abr"),
-                    "sample_rate": audio.get("asr")
-                }
+                # Audio stream only
+                if f.get("vcodec") == "none" and f.get("acodec") != "none":
+                    audio_formats.append(f)
 
-                self.send_json(result)
+            if not audio_formats:
+                self.send_json({
+                    "error": "No audio-only format available",
+                    "id": video_id
+                }, 404)
+                return
+
+            # Highest quality audio
+            audio_formats.sort(
+                key=lambda f: (
+                    f.get("abr") or 0,
+                    f.get("tbr") or 0,
+                    f.get("asr") or 0
+                ),
+                reverse=True
+            )
+
+            best = audio_formats[0]
+
+            self.send_json({
+                "id": video_id,
+                "title": info.get("title"),
+                "audio_url": best["url"],
+                "format_id": best.get("format_id"),
+                "extension": best.get("ext"),
+                "codec": best.get("acodec"),
+                "bitrate": best.get("abr"),
+                "sample_rate": best.get("asr")
+            })
 
         except Exception as e:
+
             self.send_json({
-                "error": str(e)
+                "error": str(e),
+                "id": video_id
             }, 500)
