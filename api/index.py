@@ -1,143 +1,98 @@
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-import json
 import yt_dlp
+import json
 
 
 class handler(BaseHTTPRequestHandler):
 
-    def do_GET(self):
-
-        try:
-            # Get ?id=PLAYLIST_ID
-            query = parse_qs(
-                urlparse(self.path).query
-            )
-
-            playlist_id = query.get("id", [None])[0]
-
-            if not playlist_id:
-                self.send_json(
-                    400,
-                    {
-                        "error": "Missing playlist ID"
-                    }
-                )
-                return
-
-            playlist_url = (
-                "https://www.youtube.com/playlist?list="
-                + playlist_id
-            )
-
-            ydl_options = {
-                "quiet": True,
-                "no_warnings": True,
-
-                # Don't download videos
-                "skip_download": True,
-
-                # Get playlist entries
-                "extract_flat": True,
-
-                "ignoreerrors": True
-            }
-
-            with yt_dlp.YoutubeDL(ydl_options) as ydl:
-
-                info = ydl.extract_info(
-                    playlist_url,
-                    download=False
-                )
-
-            result = []
-
-            entries = info.get("entries") or []
-
-            for entry in entries:
-
-                if not entry:
-                    continue
-
-                video_id = entry.get("id")
-
-                if not video_id:
-                    continue
-
-                title = (
-                    entry.get("title")
-                    or ""
-                )
-
-                artist = (
-                    entry.get("channel")
-                    or entry.get("uploader")
-                    or ""
-                )
-
-                duration = entry.get("duration")
-
-                # Ensure duration is a number
-                if duration is not None:
-                    duration = float(duration)
-
-                item = {
-                    "id": video_id,
-
-                    "title": title,
-
-                    "artist": artist,
-
-                    "album": None,
-
-                    "duration": duration,
-
-                    "cover": (
-                        "https://i.ytimg.com/vi/"
-                        + video_id
-                        + "/hqdefault.jpg"
-                    ),
-
-                    "rawTitle": title
-                }
-
-                result.append(item)
-
-            self.send_json(
-                200,
-                result
-            )
-
-        except Exception as error:
-
-            self.send_json(
-                500,
-                {
-                    "error": str(error)
-                }
-            )
-
-
-    def send_json(self, status, data):
-
-        output = json.dumps(
-            data,
-            ensure_ascii=False,
-            indent=2
-        ).encode("utf-8")
+    def send_json(self, data, status=200):
+        body = json.dumps(data).encode("utf-8")
 
         self.send_response(status)
-
-        self.send_header(
-            "Content-Type",
-            "application/json; charset=utf-8"
-        )
-
-        self.send_header(
-            "Access-Control-Allow-Origin",
-            "*"
-        )
-
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
-        self.wfile.write(output)
+        self.wfile.write(body)
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+
+        video_id = params.get("id", [None])[0]
+
+        if not video_id:
+            self.send_json({
+                "error": "Missing id parameter",
+                "example": "/?id=dQw4w9WgXcQ"
+            }, 400)
+            return
+
+        # YouTube video URL from ID
+        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+
+            # Audio only
+            "format": "bestaudio/best",
+
+            # Don't download the file
+            "skip_download": True,
+
+            # Avoid playlist processing
+            "noplaylist": True,
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(youtube_url, download=False)
+
+                # Find highest quality audio-only format
+                audio_formats = [
+                    f for f in info.get("formats", [])
+                    if f.get("acodec") != "none"
+                    and f.get("vcodec") == "none"
+                    and f.get("url")
+                ]
+
+                if not audio_formats:
+                    self.send_json({
+                        "error": "No audio-only stream found"
+                    }, 404)
+                    return
+
+                # Highest bitrate audio
+                audio_formats.sort(
+                    key=lambda f: (
+                        f.get("abr") or 0,
+                        f.get("tbr") or 0
+                    ),
+                    reverse=True
+                )
+
+                audio = audio_formats[0]
+
+                result = {
+                    "id": video_id,
+                    "title": info.get("title"),
+                    "duration": info.get("duration"),
+                    "thumbnail": info.get("thumbnail"),
+
+                    "audio_url": audio.get("url"),
+
+                    "format_id": audio.get("format_id"),
+                    "extension": audio.get("ext"),
+                    "acodec": audio.get("acodec"),
+                    "abr": audio.get("abr"),
+                    "sample_rate": audio.get("asr")
+                }
+
+                self.send_json(result)
+
+        except Exception as e:
+            self.send_json({
+                "error": str(e)
+            }, 500)
